@@ -4,192 +4,213 @@ import matplotlib.pyplot as plt
 from Gridworld import Gridworld
 from collections import deque
 import random
-import os
 import copy
 from hw3_2_dueling_dqn import DuelingDQN
+import warnings
+warnings.filterwarnings('ignore')
 
-# Set plotting style
-plt.style.use('ggplot')
+plt.rcParams['font.family'] = 'DejaVu Sans'
 
-def plot_and_save_grid(board_array, filename, title):
+def plot_grid(board_array, filename, title, subtitle=""):
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.set_title(title, fontsize=16)
-    
-    color_map = {' ': [1,1,1], 'P': [0.2,0.4,1], '+': [0.2,0.8,0.2], '-': [0.8,0.2,0.2], 'W': [0.2,0.2,0.2]}
+    ax.set_facecolor('#1a1a2e')
+    fig.patch.set_facecolor('#1a1a2e')
+
+    color_map = {
+        ' ': [0.15, 0.15, 0.25],
+        'P': [0.22, 0.45, 0.99],  # blue - player
+        '+': [0.18, 0.78, 0.45],  # green - goal
+        '-': [0.90, 0.25, 0.28],  # red - pit
+        'W': [0.35, 0.35, 0.42],  # grey - wall
+    }
+    label_map = {' ': '', 'P': 'P\nPlayer', '+': '+\nGoal', '-': '-\nPit', 'W': 'W\nWall'}
+
     img = np.zeros((4, 4, 3))
     for i in range(4):
         for j in range(4):
             img[i, j] = color_map[board_array[i, j]]
-            
-    ax.imshow(img)
-    
+
+    ax.imshow(img, aspect='equal')
+
+    # Draw grid lines
+    for x in range(5):
+        ax.axhline(x - 0.5, color='#4a4a6a', linewidth=1.5)
+        ax.axvline(x - 0.5, color='#4a4a6a', linewidth=1.5)
+
     for i in range(4):
         for j in range(4):
             char = board_array[i, j]
             if char != ' ':
-                ax.text(j, i, char, ha='center', va='center', color='white', fontsize=24, fontweight='bold')
-                
+                ax.text(j, i, label_map[char], ha='center', va='center',
+                        color='white', fontsize=16, fontweight='bold',
+                        linespacing=1.3)
+
     ax.set_xticks([])
     ax.set_yticks([])
-    plt.savefig(filename, bbox_inches='tight', dpi=150)
+    ax.set_title(title, fontsize=15, color='white', pad=10)
+    if subtitle:
+        ax.set_xlabel(subtitle, color='#aaaacc', fontsize=12)
+    plt.tight_layout()
+    plt.savefig(filename, bbox_inches='tight', dpi=150, facecolor='#1a1a2e')
     plt.close()
+    print(f"Saved: {filename}")
 
-def train_and_visualize():
-    print("Training Naive DQN (Static)...")
-    model_naive = torch.nn.Sequential(
+def train_naive(mode, epochs=800):
+    model = torch.nn.Sequential(
         torch.nn.Linear(64, 150), torch.nn.ReLU(),
         torch.nn.Linear(150, 100), torch.nn.ReLU(),
         torch.nn.Linear(100, 4)
     )
     loss_fn = torch.nn.MSELoss()
-    optimizer = torch.optim.Adam(model_naive.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     gamma, epsilon = 0.9, 1.0
-    epochs = 800
     replay = deque(maxlen=1000)
-    losses_naive = []
-    
+    losses = []
+    action_set = {0: 'u', 1: 'd', 2: 'l', 3: 'r'}
+
     for i in range(epochs):
-        game = Gridworld(size=4, mode='static')
+        game = Gridworld(size=4, mode=mode)
         state = torch.from_numpy(game.board.render_np().reshape(1, 64) + np.random.rand(1, 64) / 100.0).float()
-        status = 1
-        mov = 0
+        status, mov = 1, 0
         while status == 1:
             mov += 1
-            qval = model_naive(state)
-            if random.random() < epsilon:
-                action_ = np.random.randint(0, 4)
-            else:
-                action_ = np.argmax(qval.data.numpy())
-            game.makeMove({0: 'u', 1: 'd', 2: 'l', 3: 'r'}[action_])
+            qval = model(state)
+            action_ = np.random.randint(0, 4) if random.random() < epsilon else np.argmax(qval.data.numpy())
+            game.makeMove(action_set[action_])
             next_state = torch.from_numpy(game.board.render_np().reshape(1, 64) + np.random.rand(1, 64) / 100.0).float()
             reward = game.reward()
-            done = True if reward != -1 else False
+            done = reward != -1
             replay.append((state, action_, np.float32(reward), next_state, np.float32(done)))
             state = next_state
-            
             if len(replay) > 200:
-                minibatch = random.sample(replay, 200)
-                state1_batch = torch.cat([s[0] for s in minibatch])
-                action_batch = torch.Tensor([s[1] for s in minibatch])
-                reward_batch = torch.Tensor([s[2] for s in minibatch])
-                state2_batch = torch.cat([s[3] for s in minibatch])
-                done_batch = torch.Tensor([s[4] for s in minibatch])
-                
-                Q1 = model_naive(state1_batch)
+                mb = random.sample(replay, 200)
+                s1b = torch.cat([s[0] for s in mb])
+                ab = torch.Tensor([s[1] for s in mb])
+                rb = torch.Tensor([s[2] for s in mb])
+                s2b = torch.cat([s[3] for s in mb])
+                db = torch.Tensor([s[4] for s in mb])
+                Q1 = model(s1b)
                 with torch.no_grad():
-                    Q2 = model_naive(state2_batch)
-                Y = reward_batch + gamma * ((1 - done_batch) * torch.max(Q2, dim=1)[0])
-                X = Q1.gather(dim=1, index=action_batch.long().unsqueeze(dim=1)).squeeze()
+                    Q2 = model(s2b)
+                Y = rb + gamma * ((1 - db) * torch.max(Q2, dim=1)[0])
+                X = Q1.gather(1, ab.long().unsqueeze(1)).squeeze()
                 loss = loss_fn(X, Y.detach())
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                losses_naive.append(loss.item())
-                
+                optimizer.zero_grad(); loss.backward(); optimizer.step()
+                losses.append(loss.item())
             if reward != -1 or mov > 50:
                 status = 0
         if epsilon > 0.1:
-            epsilon -= (1/epochs)
+            epsilon -= 1 / epochs
 
-    plt.figure(figsize=(8, 4))
-    plt.plot(losses_naive, alpha=0.7, color='blue')
-    plt.title('HW3-1 Naive DQN Loss Curve')
-    plt.xlabel('Training Steps')
-    plt.ylabel('Loss')
-    plt.savefig('loss_hw3_1.png', bbox_inches='tight')
-    plt.close()
-    
-    game = Gridworld(size=4, mode='static')
-    plot_and_save_grid(game.display(), 'grid_static_start.png', 'Static Mode - Start')
-    status = 1
-    moves = 0
-    while status == 1 and moves < 15:
-        state = torch.from_numpy(game.board.render_np().reshape(1, 64) + np.random.rand(1, 64) / 100.0).float()
-        qval = model_naive(state)
-        action_ = np.argmax(qval.data.numpy())
-        game.makeMove({0: 'u', 1: 'd', 2: 'l', 3: 'r'}[action_])
-        if game.reward() == 10:
-            plot_and_save_grid(game.display(), 'grid_static_win.png', 'Static Mode - Win!')
-            break
-        moves += 1
+    return model, losses
 
-    print("Training Dueling DQN (Player Mode)...")
-    model_dueling = DuelingDQN(64, 150, 100, 4)
-    optimizer = torch.optim.Adam(model_dueling.parameters(), lr=1e-3)
-    epsilon = 1.0
-    epochs = 1200
+def train_dueling(mode, epochs=1200):
+    model = DuelingDQN(64, 150, 100, 4)
+    model2 = copy.deepcopy(model)
+    loss_fn = torch.nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    gamma, epsilon = 0.9, 1.0
     replay = deque(maxlen=1000)
-    losses_dueling = []
-    
+    losses = []
+    action_set = {0: 'u', 1: 'd', 2: 'l', 3: 'r'}
+    j = 0
+
     for i in range(epochs):
-        game = Gridworld(size=4, mode='player')
+        game = Gridworld(size=4, mode=mode)
         state = torch.from_numpy(game.board.render_np().reshape(1, 64) + np.random.rand(1, 64) / 100.0).float()
-        status = 1
-        mov = 0
+        status, mov = 1, 0
         while status == 1:
-            mov += 1
-            qval = model_dueling(state)
-            if random.random() < epsilon:
-                action_ = np.random.randint(0, 4)
-            else:
-                action_ = np.argmax(qval.data.numpy())
-            game.makeMove({0: 'u', 1: 'd', 2: 'l', 3: 'r'}[action_])
+            mov += 1; j += 1
+            qval = model(state)
+            action_ = np.random.randint(0, 4) if random.random() < epsilon else np.argmax(qval.data.numpy())
+            game.makeMove(action_set[action_])
             next_state = torch.from_numpy(game.board.render_np().reshape(1, 64) + np.random.rand(1, 64) / 100.0).float()
             reward = game.reward()
-            done = True if reward != -1 else False
+            done = reward != -1
             replay.append((state, action_, np.float32(reward), next_state, np.float32(done)))
             state = next_state
-            
             if len(replay) > 200:
-                minibatch = random.sample(replay, 200)
-                state1_batch = torch.cat([s[0] for s in minibatch])
-                action_batch = torch.Tensor([s[1] for s in minibatch])
-                reward_batch = torch.Tensor([s[2] for s in minibatch])
-                state2_batch = torch.cat([s[3] for s in minibatch])
-                done_batch = torch.Tensor([s[4] for s in minibatch])
-                
-                Q1 = model_dueling(state1_batch)
+                mb = random.sample(replay, 200)
+                s1b = torch.cat([s[0] for s in mb])
+                ab = torch.Tensor([s[1] for s in mb])
+                rb = torch.Tensor([s[2] for s in mb])
+                s2b = torch.cat([s[3] for s in mb])
+                db = torch.Tensor([s[4] for s in mb])
+                Q1 = model(s1b)
                 with torch.no_grad():
-                    Q2 = model_dueling(state2_batch)
-                Y = reward_batch + gamma * ((1 - done_batch) * torch.max(Q2, dim=1)[0])
-                X = Q1.gather(dim=1, index=action_batch.long().unsqueeze(dim=1)).squeeze()
+                    Q2 = model2(s2b)
+                Y = rb + gamma * ((1 - db) * torch.max(Q2, dim=1)[0])
+                X = Q1.gather(1, ab.long().unsqueeze(1)).squeeze()
                 loss = loss_fn(X, Y.detach())
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                losses_dueling.append(loss.item())
-                
+                optimizer.zero_grad(); loss.backward(); optimizer.step()
+                if j % 500 == 0:
+                    model2.load_state_dict(model.state_dict())
+                losses.append(loss.item())
             if reward != -1 or mov > 50:
                 status = 0
         if epsilon > 0.1:
-            epsilon -= (1/epochs)
+            epsilon -= 1 / epochs
 
-    plt.figure(figsize=(8, 4))
-    plt.plot(losses_dueling, alpha=0.7, color='green')
-    plt.title('HW3-2 Dueling DQN Loss Curve')
-    plt.xlabel('Training Steps')
-    plt.ylabel('Loss')
-    plt.savefig('loss_hw3_2.png', bbox_inches='tight')
-    plt.close()
-    
-    game = Gridworld(size=4, mode='player')
-    plot_and_save_grid(game.display(), 'grid_player_start.png', 'Player Mode - Start')
-    status = 1
-    moves = 0
-    while status == 1 and moves < 15:
+    return model, losses
+
+def get_game_sequence(model, mode, action_set={0: 'u', 1: 'd', 2: 'l', 3: 'r'}):
+    game = Gridworld(size=4, mode=mode)
+    frames = [game.display().copy()]
+    status, moves = 1, 0
+    won = False
+    while status == 1 and moves < 20:
         state = torch.from_numpy(game.board.render_np().reshape(1, 64) + np.random.rand(1, 64) / 100.0).float()
-        qval = model_dueling(state)
-        action_ = np.argmax(qval.data.numpy())
-        game.makeMove({0: 'u', 1: 'd', 2: 'l', 3: 'r'}[action_])
-        if game.reward() == 10:
-            plot_and_save_grid(game.display(), 'grid_player_win.png', 'Player Mode - Win!')
-            break
+        action_ = np.argmax(model(state).data.numpy())
+        game.makeMove(action_set[action_])
+        frames.append(game.display().copy())
+        reward = game.reward()
+        if reward == 10:
+            won = True
+            status = 0
+        elif reward == -10:
+            status = 0
         moves += 1
+    return frames, won
 
-    print("Generating Random Mode Grids...")
-    game = Gridworld(size=4, mode='random')
-    plot_and_save_grid(game.display(), 'grid_random_start.png', 'Random Mode - Example')
-    print("Done!")
+def save_loss_curve(losses, filename, title, color):
+    fig, ax = plt.subplots(figsize=(8, 4))
+    fig.patch.set_facecolor('#1a1a2e')
+    ax.set_facecolor('#16213e')
+    smoothed = np.convolve(losses, np.ones(20)/20, mode='valid') if len(losses) > 20 else losses
+    ax.plot(losses, alpha=0.25, color=color)
+    ax.plot(range(len(smoothed)), smoothed, color=color, linewidth=2, label='Smoothed Loss')
+    ax.set_title(title, color='white', fontsize=14)
+    ax.set_xlabel('Training Steps', color='#aaaacc')
+    ax.set_ylabel('Loss (MSE)', color='#aaaacc')
+    ax.tick_params(colors='#aaaacc')
+    for spine in ax.spines.values():
+        spine.set_color('#4a4a6a')
+    ax.legend(facecolor='#16213e', labelcolor='white')
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, facecolor='#1a1a2e')
+    plt.close()
+    print(f"Saved: {filename}")
 
 if __name__ == '__main__':
-    train_and_visualize()
+    print("=== [1/3] Training Naive DQN - Static Mode ===")
+    model_static, losses_static = train_naive('static', epochs=800)
+    save_loss_curve(losses_static, 'loss_hw3_1_static.png', 'HW3-1 | Naive DQN - Static Mode | Loss Curve', '#5599ff')
+    frames, won = get_game_sequence(model_static, 'static')
+    plot_grid(frames[0], 'grid_static_start.png', 'Static Mode — Start', 'P starts at (0,3) — fixed layout')
+    plot_grid(frames[-1], 'grid_static_result.png', f'Static Mode — {"Win! 🎉" if won else "Result"}', 'AI navigated to Goal (+)')
+
+    print("=== [2/3] Training Dueling DQN - Player Mode ===")
+    model_player, losses_player = train_dueling('player', epochs=1200)
+    save_loss_curve(losses_player, 'loss_hw3_2_player.png', 'HW3-2 | Dueling DQN - Player Mode | Loss Curve', '#55dd88')
+    frames, won = get_game_sequence(model_player, 'player')
+    plot_grid(frames[0], 'grid_player_start.png', 'Player Mode — Start', 'P starts at random position; others fixed')
+    plot_grid(frames[-1], 'grid_player_result.png', f'Player Mode — {"Win! 🎉" if won else "Result"}', 'AI generalizes across starting positions')
+
+    print("=== [3/3] Training Dueling DQN - Random Mode ===")
+    model_random, losses_random = train_dueling('random', epochs=1500)
+    save_loss_curve(losses_random, 'loss_hw3_3_random.png', 'HW3-3 | Dueling DQN - Random Mode | Loss Curve', '#ff9955')
+    frames, won = get_game_sequence(model_random, 'random')
+    plot_grid(frames[0], 'grid_random_start.png', 'Random Mode — Start', 'All pieces spawn at random positions')
+    plot_grid(frames[-1], 'grid_random_result.png', f'Random Mode — {"Win! 🎉" if won else "Result"}', 'Hardest generalization challenge')
+
+    print("\n✅ All images generated successfully!")
