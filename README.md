@@ -1,200 +1,87 @@
-# Homework 3: DQN and its variants
+# 📘 Homework 3: DQN and its variants
+**深度強化學習 HW3 學習與實作報告**
 
-這份作業包含深度強化學習中最經典的 DQN 演算法及其進階變體的實作，並使用 Gridworld 遊戲環境進行測試。
-
-## 執行環境與前置準備
-
-在執行程式碼之前，請確保安裝了以下套件：
-```bash
-pip install numpy torch pytorch-lightning matplotlib
-```
-
-所有任務的執行檔均已編寫完畢，你可以透過以下指令獨立運行每個任務：
-```bash
-python hw3_1_naive_dqn.py
-python hw3_2_double_dqn.py
-python hw3_2_dueling_dqn.py
-python hw3_3_lightning_dqn.py
-```
+這份作業我們針對 Gridworld 環境，從零開始實作了最基礎的 Naive DQN，並逐步升級成 Double DQN 與 Dueling DQN 變體，最後為了穩定最難的隨機模式，更進一步將架構轉換為 PyTorch Lightning，並加入了梯度裁剪 (Gradient Clipping) 與學習率調度 (LR Scheduling) 等訓練技巧。
 
 ---
 
-## HW3-1：基礎 DQN 理解報告 (Naive DQN & Experience Replay Buffer)
-
-### 執行腳本：`hw3_1_naive_dqn.py`
-
-*   **基礎 DQN 實作邏輯**：
-    我們實作了一個包含多個隱藏層的神經網路 `torch.nn.Sequential`。這個神經網路負責接收目前 Gridworld 環境的狀態 (State，轉換成長度 64 的向量) 作為輸入，然後輸出 4 個動作 (`u, d, l, r`) 對應的 Q 值 (Q-value)。我們會使用 $\epsilon$-greedy 策略，讓 AI 有一定機率探索隨機動作，或是根據最大 Q 值選擇最佳動作。
-*   **Experience Replay Buffer (經驗回放池) 的功用**：
-    在 `hw3_1_naive_dqn.py` 中，我們用 `collections.deque` 建立了一個 `replay` 串列。每當 AI 走了一步，就會產生一筆包含 `(當前狀態, 動作, 回饋值, 新狀態, 遊戲是否結束)` 的經驗並存入回放池。
-    **功能與優點**：
-    1.  **打亂時間相關性**：強化學習在玩遊戲時，連續取得的資料高度相關（例如：走到這格的下一步一定在隔壁）。如果直接用連續的資料訓練，神經網路很容易發生「災難性遺忘」或無法收斂。透過將經驗存起來再「隨機抽取（Random Sample）」，可以打破資料間的時間相關性。
-    2.  **提高資料利用率**：同一筆過去的經驗，可以被反覆抽樣並用來多次訓練模型，大大提升學習效率。
+## 📂 1. Setup & Reference
+我們使用了參考來源的 `GridBoard.py` 與 `Gridworld.py` 作為環境。遊戲的基本規則如下：
+- **P (Player, 藍色)**：玩家，可以上下左右移動。
+- **+ (Goal, 綠色)**：目標位置，碰到可得 +10 分，遊戲獲勝結束。
+- **- (Pit, 紅色)**：陷阱位置，碰到扣 -10 分，遊戲失敗結束。
+- **W (Wall, 黑色)**：牆壁，無法穿透。
+- 每走一步會受到 -1 分的懲罰，鼓勵 AI 找出最短路徑。
 
 ---
 
-## HW3-2：進階變體實作與比較 (Double DQN & Dueling DQN)
+## 🧠 2. HW3-1: Naive DQN (Static Mode) [30%]
+### 實作概念與程式碼架構
+在這個難度（靜態模式）下，地圖的物件位置永遠固定不變。我們撰寫了 `hw3_1_naive_dqn.py`。
+- **網路架構**：使用三個線性層 (Linear Layers)，輸入為 64 維的拉平向量 (4x4x4)，經過 150 與 100 的隱藏層 (搭配 ReLU 激活函數)，最後輸出 4 個動作的 Q-Value。
+- **Experience Replay Buffer (經驗回放池)**：這是一個能大幅提升訓練穩定度的機制。我們將 AI 每次移動產生的 `(狀態, 動作, 回饋, 新狀態, 是否結束)` 存入一個 `deque` 佇列中。
+  - **功用與理解**：因為強化學習中「連續動作產生的狀態」是高度相關的（例如站在原地往左走，和往右走的狀態畫面極度相似），如果直接拿連續資料訓練，神經網路很容易陷入「災難性遺忘」，也就是只記得最近幾步怎麼走。透過 Experience Replay 將資料存起來後再**隨機抽取 (Random Sample)**，能打破時間相關性，並讓過去的經驗能被重複利用，大幅提升樣本效率 (Sample Efficiency)。
 
-我們在 `player mode` (玩家初始位置隨機) 的環境下實作了兩種進階變體。
+### 訓練成果與實際截圖
+<p align="center">
+  <img src="loss_hw3_1.png" alt="Naive DQN Loss" width="400"/>
+</p>
+從 Loss 曲線可以看出，隨著經驗的累積，網路的 Loss 逐漸收斂。以下是 AI 在 Static 模式中實際通關的視覺截圖：
 
-### 1. Double DQN (腳本：`hw3_2_double_dqn.py`)
-*   **如何改善 DQN**：傳統 DQN 在計算目標 Q 值時，會使用同一個網路來「選擇最大動作」與「評估動作價值」，這導致容易選擇到剛好被高估的 Q 值（Overestimation）。
-*   **實作細節**：我們準備了兩個網路：`model` (Online Network) 與 `model2` (Target Network)。計算目標 Q 值時，先用 `model` 選出在 $S'$ 狀態下 Q 值最高的動作 $a^*$，再用 `model2` 來評估該動作的真正價值 $Q(S', a^*)$。這種「選擇與評估分離」的機制，有效減少了 Q 值的過度估計，讓訓練更平穩。
-
-### 2. Dueling DQN (腳本：`hw3_2_dueling_dqn.py`)
-*   **如何改善 DQN**：傳統 DQN 直接用一個全連接層輸出每個動作的 Q 值，但在某些狀態下，其實「不管選什麼動作都差不多（例如：死路）」，此時區分具體動作的好壞意義不大。
-*   **實作細節**：我們在 `DuelingDQN` 類別中，將神經網路倒數第二層分拆成了兩條獨立的路徑（Streams）：
-    1.  **Value Stream**：負責評估目前「狀態本身的價值」 $V(s)$。
-    2.  **Advantage Stream**：負責評估「各個動作比平均動作好多少的優勢」 $A(s, a)$。
-    最後透過公式 $Q(s, a) = V(s) + A(s, a) - \text{mean}(A(s, a))$ 將兩者結合。這樣的架構能讓神經網路更精確地評估狀態的價值，並且在面對眾多動作選項的環境中學習得更快。
+<p align="center">
+  <img src="grid_static_start.png" alt="Static Start" width="200"/>
+  ➡️ 
+  <img src="grid_static_win.png" alt="Static Win" width="200"/>
+</p>
 
 ---
 
-## HW3-3：架構轉換與訓練技巧 (PyTorch Lightning)
+## ⚖️ 3. HW3-2: Enhanced DQN Variants (Player Mode) [40%]
+在這個模式下，玩家的初始位置會隨機出現，難度提升。我們實作了以下兩種變體來比較它們對基礎 DQN 的改進：
+
+### A. Double DQN (`hw3_2_double_dqn.py`)
+- **傳統 DQN 的痛點**：在計算 目標 Q 值 (Target Q-value) 時，傳統 DQN 會使用同一個網路來「挑選最大 Q 值的動作」並且「評估該動作的價值」。這很容易導致某些動作的價值剛好被高估，進而讓網路不斷往錯誤的方向更新（過度估計 Overestimation Bias）。
+- **改善方式**：Double DQN 引入了兩個網路 (Online Network 與 Target Network)。我們用 Online Network 來選擇下一個狀態最佳的動作，然後交由 Target Network 來評估這個動作的真正價值。這樣的「選擇與評估分離」有效避免了高估問題，讓價值函數更加精準。
+
+### B. Dueling DQN (`hw3_2_dueling_dqn.py`)
+- **傳統 DQN 的痛點**：DQN 會對每一種「狀態-動作」給出一個分數。但在某些狀態下（例如周圍沒有陷阱，只是單純在空地移動），不管選哪個動作，後續的價值其實都差不多。此時強迫網路去學習每一個特定動作的精準 Q 值是浪費且效率低下的。
+- **改善方式**：Dueling DQN 改變了網路架構的後半段，將輸出分流為兩條路徑：
+  1. **Value Stream $V(s)$**：單純評估「這個狀態本身有多好」。
+  2. **Advantage Stream $A(s, a)$**：評估「選擇某個動作比平均動作好多少」。
+- **結合公式**：$Q(s,a) = V(s) + A(s,a) - \text{mean}(A(s,a))$。這種設計讓神經網路可以更頻繁地更新狀態價值 $V(s)$，在複雜環境（特別是動作選擇影響不大的狀態）下能顯著加速學習。
+
+### 訓練成果與實際截圖 (Dueling DQN)
+<p align="center">
+  <img src="loss_hw3_2.png" alt="Dueling DQN Loss" width="400"/>
+</p>
+<p align="center">
+  <img src="grid_player_start.png" alt="Player Start" width="200"/>
+  ➡️ 
+  <img src="grid_player_win.png" alt="Player Win" width="200"/>
+</p>
+
+---
+
+## 🔁 4. HW3-3: Enhance DQN for Random Mode WITH Training Tips [30%]
+隨機模式下，所有物件（包含終點、陷阱、牆壁）的位置都是隨機生成的，這是難度最高的任務。為了應對這個挑戰，我們重構了程式碼，將模型轉換為工業級標準的 **PyTorch Lightning** 架構。
 
 ### 執行腳本：`hw3_3_lightning_dqn.py`
+- **框架優勢 (PyTorch Lightning)**：將凌亂的 `while` 迴圈封裝成了 `training_step`，我們更實作了自訂的 `IterableDataset` 來優雅地處理 Replay Buffer 資料流。這不僅讓程式碼結構更清晰，也更容易擴充。
+- **訓練穩定性優化 (Bonus Training Tips)**：
+  1. **Gradient Clipping (梯度裁剪)**：在 `pl.Trainer` 參數中加入了 `gradient_clip_val=1.0`。在隨機模式下，AI 很容易遇到從未見過的極端狀態，產生過大的 Loss 導致「梯度爆炸」。梯度裁剪能限制反向傳播的步長，保證權重更新的穩定性。
+  2. **LR Scheduling (學習率調度)**：在 `configure_optimizers` 中加入了 `torch.optim.lr_scheduler.StepLR`。這能讓學習率在訓練中後期自動衰減 (乘以 0.9)，幫助模型在接近最佳解時，以更細微的步伐進行收斂。
 
-在挑戰難度最高的 `random mode`（目標、牆壁、陷阱和玩家全隨機）中，我們將原本的 PyTorch 程式重構成了高模組化的 **PyTorch Lightning** 框架。
-
-*   **框架轉換優勢**：
-    我們實作了 `pl.LightningModule` 類別與一個用於處理經驗回放的自訂 `IterableDataset`。這讓訓練邏輯（`training_step`）、優化器設定（`configure_optimizers`）變得極度簡潔，免去了原先又長又複雜的 `while` 迴圈與手動梯度歸零的操作。
-*   **進階訓練技巧 (Bonus)**：
-    1.  **Gradient Clipping (梯度裁剪)**：在 `pl.Trainer` 中設定了 `gradient_clip_val=1.0`。這能防止神經網路反向傳播時發生「梯度爆炸」，使權重更新維持在安全穩定的範圍內。
-    2.  **LR Scheduling (學習率調度)**：在 `configure_optimizers` 內加入了 `StepLR`，讓學習率在訓練過程（每 1000 step）中自動乘上 `0.9` 衰減，幫助神經網路在訓練末期時，步伐變小以更容易精準收斂。
+### 實際截圖 (Random Mode)
+<p align="center">
+  <img src="grid_random_start.png" alt="Random Start" width="200"/>
+</p>
 
 ---
 
-## 🎮 線上畫面 Demo (終端機動畫)
-
-為了讓你能夠**視覺化**地看到訓練成果，我準備了一支 `demo.py` 腳本。
-
-這支腳本會：
-1. 快速在背景訓練一個 Dueling DQN 模型（大約 5~10 秒）。
-2. 在終端機中透過**清除螢幕**與**延遲**，產生一個簡單的「動畫效果」，讓你親眼看到 AI 是怎麼一步步移動並走向目標的。
-
-### 如何執行 Demo？
-只要在終端機輸入：
+## 🎮 如何親自執行與體驗？
+若想要親眼看到 AI 一步步在你的終端機裡移動，我為你寫了一支包含動畫播放效果的 Demo 腳本。
+執行指令：
 ```bash
 python demo.py
 ```
-（請注意：Demo 會有動畫刷新效果，請在獨立的 Terminal/Command Prompt 中執行體驗最佳。）
-
----
-
-## 📸 訓練結果截圖與軌跡 (Traces)
-
-以下是三個難度模式下，我們所訓練出來的 AI 實際玩遊戲的軌跡（截圖）：
-
-### Mode: Static (HW3-1 基礎 DQN)
-```text
-[['+' '-' ' ' 'P']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: d
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' 'P']
- [' ' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: d
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' 'P']
- [' ' ' ' ' ' ' ']]
-
-Action: l
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' 'P' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: l
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' 'P' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: l
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- ['P' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: u
-[['+' '-' ' ' ' ']
- ['P' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: u
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Result: AI Won (+)
-```
-
-### Mode: Player (HW3-2 Double/Dueling DQN)
-```text
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' ' ' ' ' 'P']]
-
-Action: l
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' ' ' 'P' ' ']]
-
-Action: l
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' 'P' ' ' ' ']]
-
-Action: l
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- ['P' ' ' ' ' ' ']]
-
-Action: u
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- ['P' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: u
-[['+' '-' ' ' ' ']
- ['P' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: u
-[['+' '-' ' ' ' ']
- [' ' 'W' ' ' ' ']
- [' ' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Result: AI Won (+)
-```
-
-### Mode: Random (HW3-3 隨機生成)
-```text
-[['-' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']
- ['W' '+' 'P' ' ']
- [' ' ' ' ' ' ' ']]
-
-Action: l
-[['-' ' ' ' ' ' ']
- [' ' ' ' ' ' ' ']
- ['W' '+' ' ' ' ']
- [' ' ' ' ' ' ' ']]
-
-Result: AI Won (+)
-```
+*(程式會先在背景訓練幾秒鐘，接著將會在終端機以動畫的方式顯示 AI 走迷宮的決策過程！)*
